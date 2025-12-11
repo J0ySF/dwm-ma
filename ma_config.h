@@ -31,4 +31,33 @@ typedef enum {
     MA_CONFIG_30_POINTS_3J,
 } MA_CONFIG;
 
+/**
+ * Maximum possible output count used by any microphone array layout
+ */
+#define DWM_MA_MAX_OUTPUT_COUNT 30
+
+/**
+ * Microphone array layout
+ */
+typedef struct {
+    /**
+     * Microphone array metric unit radius
+     */
+    const float radius;
+    /**
+     * Microphone array channels count
+     */
+    const int channel_count;
+    /**
+     * Azimuth-elevation couples for each microphone, in radians (valid data dimensionality channel_count x 2)
+     */
+    const float mic_azi_elev[DWM_MA_MAX_OUTPUT_COUNT][2];
+    /**
+     * Relative metric X-Y-Z coordinates to the center of the array for each microphone (valid data dimensionality channel_count x 3)
+     */
+    const float mic_rel_xyz_m[DWM_MA_MAX_OUTPUT_COUNT][3];
+} ma_layout;
+
+const ma_layout *ma_config_layout(MA_CONFIG ma_config);
+
 #endif
