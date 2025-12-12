@@ -1,15 +1,16 @@
 #include "dwm_ma.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 // Internal structs and functions declarations
 
 /**
  * Internal dwm-ma boundary filter implementation, based on the solution described in
- * Kelloniemi, Antti. "Frequency-dependent boundary condition for the 3-D digital waveguide mesh." Proc. Int. Conf. Digital Audio Effects (DAFx’06). 2006.
+ * Kelloniemi, Antti. "Frequency-dependent boundary condition for the 3-D digital waveguide mesh." Proc. Int. Conf.
+ * Digital Audio Effects (DAFx’06). 2006.
  */
 typedef struct {
     float t1, t2, t3;
@@ -32,13 +33,24 @@ static int linearized_index_xyz(int x_j, int y_j, int z_j);
 /**
  * Computes the interpolation parameters for a metric units coordinate
  * @param pos_m metric units XYZ position
- * @param pos_m_offset metric units XYZ position offset, ignored if NULL
  * @param interp_percents resulting XYZ interpolation percentages
  * @param interp_indices resulting X[0,1]-Y[0,1]-Z[0,1] interpolation coordinate
  * @note coordinates outside the mesh are clamped inside to valid coordinates
  */
-static void compute_interpolation_parameters(const float *pos_m, const float *pos_m_offset,
-                                             float interp_percents[3], int interp_indices[2][2][2]);
+static void compute_interpolation_parameters_m(const float *pos_m, float interp_percents[3],
+                                               int interp_indices[2][2][2]);
+
+/**
+ * Computes the interpolation parameters for a relative mic array coordinate
+ * @param pos_j_rel relative junction mic XYZ position
+ * @param pos_m_offset metric units mic array XYZ position offset
+ * @param ma_scale relative junction mic position scaling factor
+ * @param interp_percents resulting XYZ interpolation percentages
+ * @param interp_indices resulting X[0,1]-Y[0,1]-Z[0,1] interpolation coordinate
+ * @note coordinates outside the mesh are clamped inside to valid coordinates
+ */
+static void compute_interpolation_parameters_ma(const int *pos_j_rel, const float *pos_m_offset, float ma_scale,
+                                                float interp_percents[3], int interp_indices[2][2][2]);
 
 /**
  * Writes a value using pre-computed interpolation parameters
@@ -47,8 +59,8 @@ static void compute_interpolation_parameters(const float *pos_m, const float *po
  * @param interp_percents pre-computed XYZ interpolation percentages
  * @param interp_indices pre-computed X[0,1]-Y[0,1]-Z[0,1] interpolation coordinate
  */
-static void write_value_interp_params(const dwm_ma_t *handle, float value,
-                                      const float interp_percents[3], const int interp_indices[2][2][2]);
+static void write_value_interp_params(const dwm_ma_t *handle, float value, const float interp_percents[3],
+                                      const int interp_indices[2][2][2]);
 
 /**
  * Reads a value using pre-computed interpolation parameters
@@ -56,8 +68,8 @@ static void write_value_interp_params(const dwm_ma_t *handle, float value,
  * @param interp_percents pre-computed XYZ interpolation percentages
  * @param interp_indices pre-computed X[0,1]-Y[0,1]-Z[0,1] interpolation coordinate
  */
-static float read_value_interp_params(const dwm_ma_t *handle,
-                                      const float interp_percents[3], const int interp_indices[2][2][2]);
+static float read_value_interp_params(const dwm_ma_t *handle, const float interp_percents[3],
+                                      const int interp_indices[2][2][2]);
 
 /**
  * Progress the simulation state by one step on the whole mesh
@@ -141,7 +153,7 @@ void dwm_ma_destroy(void **dwm_ma) {
     *dwm_ma = NULL;
 }
 
-void dwm_ma_init(void *dwm_ma, float dwm_bound_params[6][2], const int dwm_bound_params_normalized) {
+void dwm_ma_init(void *dwm_ma, const float dwm_bound_params[6][2], const int dwm_bound_params_normalized) {
     dwm_ma_t *handle = dwm_ma;
 
     // Set initial memory state, assumes IEEE 754 float representation where 0-ed out bits correspond to 0.0f
@@ -167,34 +179,39 @@ void dwm_ma_init(void *dwm_ma, float dwm_bound_params[6][2], const int dwm_bound
     }
 }
 
-void dwm_ma_process_m(void *dwm_ma,
-                      float **in_buffers, float **in_positions_m, int in_count,
-                      const MA_CONFIG ma_config, float **ma_buffers, float *ma_position_m) {
+void dwm_ma_process_interpolated(void *dwm_ma, const float *const *in_buffers, const float *const *in_positions_m,
+                                 int in_count, const MA_CONFIG ma_config, float ma_scale, float *const *ma_buffers,
+                                 const float *ma_position_m) {
     dwm_ma_t *handle = dwm_ma;
 
-    // Protect against non-valid in_count values
+    // Protect against non-valid parameters
+    ma_scale = fclampf(ma_scale, 1.0f, 10.0f);
     in_count = clampi(in_count, 0, DWM_MA_MAX_INPUT_COUNT);
 
     // Preprocess each input coordinate's interpolation parameters, since they are the same during the entire buffer
     float input_int_percents[DWM_MA_MAX_INPUT_COUNT][3];
     int input_int_indices[DWM_MA_MAX_INPUT_COUNT][2][2][2];
     for (int i = 0; i < in_count; i++) {
-        compute_interpolation_parameters(in_positions_m[i], NULL, input_int_percents[i], input_int_indices[i]);
+        compute_interpolation_parameters_m(in_positions_m[i], input_int_percents[i], input_int_indices[i]);
     }
 
     // Preprocess the microphone array position such that the entire radius is inside the mesh bounds
     const ma_layout *ma = ma_config_layout(ma_config);
     float ma_position_m_restricted[3];
-    ma_position_m_restricted[0] = fclampf(ma_position_m[0], ma->radius, DWM_MA_SIZE_X_M - ma->radius);
-    ma_position_m_restricted[1] = fclampf(ma_position_m[1], ma->radius, DWM_MA_SIZE_Y_M - ma->radius);
-    ma_position_m_restricted[2] = fclampf(ma_position_m[2], ma->radius, DWM_MA_SIZE_Z_M - ma->radius);
+    ma_position_m_restricted[0] =
+            fclampf(ma_position_m[0], ma->radius_m * ma_scale, DWM_MA_SIZE_X_M - ma->radius_m * ma_scale);
+    ma_position_m_restricted[1] =
+            fclampf(ma_position_m[1], ma->radius_m * ma_scale, DWM_MA_SIZE_Y_M - ma->radius_m * ma_scale);
+    ma_position_m_restricted[2] =
+            fclampf(ma_position_m[2], ma->radius_m * ma_scale, DWM_MA_SIZE_Z_M - ma->radius_m * ma_scale);
 
-    // Preprocess the output microphone array's interpolation parameters, since they are the same during the entire buffer
+    // Preprocess the output microphone array's interpolation parameters, since they are the same during the entire
+    // buffer
     float output_int_percents[DWM_MA_MAX_OUTPUT_COUNT][3];
     int output_int_indices[DWM_MA_MAX_OUTPUT_COUNT][2][2][2];
     for (int i = 0; i < ma->channel_count; i++) {
-        compute_interpolation_parameters(ma->mic_rel_xyz_m[i], ma_position_m_restricted,
-                                         output_int_percents[i], output_int_indices[i]);
+        compute_interpolation_parameters_ma(ma->mic_rel_xyz_j[i], ma_position_m_restricted, ma_scale,
+                                            output_int_percents[i], output_int_indices[i]);
     }
 
     // Run DWM_MA_BUFFER_SIZE simulation iterations
@@ -220,18 +237,11 @@ static int linearized_index_xyz(const int x_j, const int y_j, const int z_j) {
     return (z_j * DWM_MA_SIZE_Y_J + y_j) * DWM_MA_SIZE_X_J + x_j;
 }
 
-void compute_interpolation_parameters(const float *pos_m, const float *pos_m_offset,
-                                      float interp_percents[3], int interp_indices[2][2][2]) {
+void compute_interpolation_parameters_m(const float *pos_m, float interp_percents[3], int interp_indices[2][2][2]) {
     // Translate the metric coordinates to valid floating point junction coordinates
-    const float x_j = fclampf(
-        (pos_m[0] + (pos_m_offset != NULL ? pos_m_offset[0] : 0.0f)) * _DWM_MA_METRIC_2_JUNCTION - 0.5f
-        , 0.0f, DWM_MA_SIZE_X_J - 1.0f);
-    const float y_j = fclampf(
-        (pos_m[1] + (pos_m_offset != NULL ? pos_m_offset[1] : 0.0f)) * _DWM_MA_METRIC_2_JUNCTION - 0.5f
-        , 0.0f, DWM_MA_SIZE_Y_J - 1.0f);
-    const float z_j = fclampf(
-        (pos_m[2] + (pos_m_offset != NULL ? pos_m_offset[2] : 0.0f)) * _DWM_MA_METRIC_2_JUNCTION - 0.5f
-        , 0.0f, DWM_MA_SIZE_Z_J - 1.0f);
+    const float x_j = fclampf(pos_m[0] * _DWM_MA_METRIC_2_JUNCTION - 0.5f, 0.0f, DWM_MA_SIZE_X_J - 1.0f);
+    const float y_j = fclampf(pos_m[1] * _DWM_MA_METRIC_2_JUNCTION - 0.5f, 0.0f, DWM_MA_SIZE_Y_J - 1.0f);
+    const float z_j = fclampf(pos_m[2] * _DWM_MA_METRIC_2_JUNCTION - 0.5f, 0.0f, DWM_MA_SIZE_Z_J - 1.0f);
 
     // Get the next and previous junction coordinates for each dimension
     const int x_j_0 = (int) floorf(x_j);
@@ -257,59 +267,77 @@ void compute_interpolation_parameters(const float *pos_m, const float *pos_m_off
     interp_percents[2] = modff(z_j, &_);
 }
 
-void write_value_interp_params(const dwm_ma_t *handle, const float value,
-                               const float interp_percents[3], const int interp_indices[2][2][2]) {
-    handle->p[interp_indices[0][0][0]] = flerpf(handle->p[interp_indices[0][0][0]], value,
-                                                (1 - interp_percents[0]) *
-                                                (1 - interp_percents[1]) *
-                                                (1 - interp_percents[2]));
-    handle->p[interp_indices[1][0][0]] = flerpf(handle->p[interp_indices[1][0][0]], value,
-                                                interp_percents[0] *
-                                                (1 - interp_percents[1]) *
-                                                (1 - interp_percents[2]));
-    handle->p[interp_indices[0][1][0]] = flerpf(handle->p[interp_indices[0][1][0]], value,
-                                                (1 - interp_percents[0]) *
-                                                interp_percents[1] *
-                                                (1 - interp_percents[2]));
-    handle->p[interp_indices[1][1][0]] = flerpf(handle->p[interp_indices[1][1][0]], value,
-                                                interp_percents[0] *
-                                                interp_percents[1] *
-                                                (1 - interp_percents[2]));
-    handle->p[interp_indices[0][0][1]] = flerpf(handle->p[interp_indices[0][0][1]], value,
-                                                (1 - interp_percents[0]) *
-                                                (1 - interp_percents[1]) *
-                                                interp_percents[2]);
-    handle->p[interp_indices[1][0][1]] = flerpf(handle->p[interp_indices[1][0][1]], value,
-                                                interp_percents[0] *
-                                                (1 - interp_percents[1]) *
-                                                interp_percents[2]);
-    handle->p[interp_indices[0][1][1]] = flerpf(handle->p[interp_indices[0][1][1]], value,
-                                                (1 - interp_percents[0]) *
-                                                interp_percents[1] *
-                                                interp_percents[2]);
-    handle->p[interp_indices[1][1][1]] = flerpf(handle->p[interp_indices[1][1][1]], value,
-                                                interp_percents[0] *
-                                                interp_percents[1] *
-                                                interp_percents[2]);
+void compute_interpolation_parameters_ma(const int *pos_j_rel, const float *pos_m_offset, const float ma_scale,
+                                         float interp_percents[3], int interp_indices[2][2][2]) {
+    // Translate the metric coordinates to valid floating point junction coordinates
+    const float x_j = fclampf((float) pos_j_rel[0] * ma_scale + pos_m_offset[0] * _DWM_MA_METRIC_2_JUNCTION - 0.5f,
+                              0.0f, DWM_MA_SIZE_X_J - 1.0f);
+    const float y_j = fclampf((float) pos_j_rel[1] * ma_scale + pos_m_offset[1] * _DWM_MA_METRIC_2_JUNCTION - 0.5f,
+                              0.0f, DWM_MA_SIZE_Y_J - 1.0f);
+    const float z_j = fclampf((float) pos_j_rel[2] * ma_scale + pos_m_offset[2] * _DWM_MA_METRIC_2_JUNCTION - 0.5f,
+                              0.0f, DWM_MA_SIZE_Z_J - 1.0f);
+
+    // Get the next and previous junction coordinates for each dimension
+    const int x_j_0 = (int) floorf(x_j);
+    const int x_j_1 = (int) ceilf(x_j);
+    const int y_j_0 = (int) floorf(y_j);
+    const int y_j_1 = (int) ceilf(y_j);
+    const int z_j_0 = (int) floorf(z_j);
+    const int z_j_1 = (int) ceilf(z_j);
+
+    // Return the linearized junction sampling indices
+    interp_indices[0][0][0] = linearized_index_xyz(x_j_0, y_j_0, z_j_0);
+    interp_indices[1][0][0] = linearized_index_xyz(x_j_1, y_j_0, z_j_0);
+    interp_indices[0][1][0] = linearized_index_xyz(x_j_0, y_j_1, z_j_0);
+    interp_indices[1][1][0] = linearized_index_xyz(x_j_1, y_j_1, z_j_0);
+    interp_indices[0][0][1] = linearized_index_xyz(x_j_0, y_j_0, z_j_1);
+    interp_indices[1][0][1] = linearized_index_xyz(x_j_1, y_j_0, z_j_1);
+    interp_indices[0][1][1] = linearized_index_xyz(x_j_0, y_j_1, z_j_1);
+    interp_indices[1][1][1] = linearized_index_xyz(x_j_1, y_j_1, z_j_1);
+
+    float _; // Return each axis' interpolation percentages
+    interp_percents[0] = modff(x_j, &_);
+    interp_percents[1] = modff(y_j, &_);
+    interp_percents[2] = modff(z_j, &_);
 }
 
-float read_value_interp_params(const dwm_ma_t *handle,
-                               const float interp_percents[3], const int interp_indices[2][2][2]) {
-    return flerpf(
-        flerpf(
-            flerpf(handle->p_aux[interp_indices[0][0][0]], handle->p_aux[interp_indices[1][0][0]],
-                   interp_percents[0]),
-            flerpf(handle->p_aux[interp_indices[0][1][0]], handle->p_aux[interp_indices[1][1][0]],
-                   interp_percents[0]),
-            interp_percents[1]),
-        flerpf(
-            flerpf(handle->p_aux[interp_indices[0][0][1]], handle->p_aux[interp_indices[1][0][1]],
-                   interp_percents[0]),
-            flerpf(handle->p_aux[interp_indices[0][1][1]], handle->p_aux[interp_indices[1][1][1]],
-                   interp_percents[0]),
-            interp_percents[1]),
-        interp_percents[2]
-    );
+void write_value_interp_params(const dwm_ma_t *handle, const float value, const float interp_percents[3],
+                               const int interp_indices[2][2][2]) {
+    handle->p[interp_indices[0][0][0]] =
+            flerpf(handle->p[interp_indices[0][0][0]], value,
+                   (1 - interp_percents[0]) * (1 - interp_percents[1]) * (1 - interp_percents[2]));
+    handle->p[interp_indices[1][0][0]] =
+            flerpf(handle->p[interp_indices[1][0][0]], value,
+                   interp_percents[0] * (1 - interp_percents[1]) * (1 - interp_percents[2]));
+    handle->p[interp_indices[0][1][0]] =
+            flerpf(handle->p[interp_indices[0][1][0]], value,
+                   (1 - interp_percents[0]) * interp_percents[1] * (1 - interp_percents[2]));
+    handle->p[interp_indices[1][1][0]] = flerpf(handle->p[interp_indices[1][1][0]], value,
+                                                interp_percents[0] * interp_percents[1] * (1 - interp_percents[2]));
+    handle->p[interp_indices[0][0][1]] =
+            flerpf(handle->p[interp_indices[0][0][1]], value,
+                   (1 - interp_percents[0]) * (1 - interp_percents[1]) * interp_percents[2]);
+    handle->p[interp_indices[1][0][1]] = flerpf(handle->p[interp_indices[1][0][1]], value,
+                                                interp_percents[0] * (1 - interp_percents[1]) * interp_percents[2]);
+    handle->p[interp_indices[0][1][1]] = flerpf(handle->p[interp_indices[0][1][1]], value,
+                                                (1 - interp_percents[0]) * interp_percents[1] * interp_percents[2]);
+    handle->p[interp_indices[1][1][1]] = flerpf(handle->p[interp_indices[1][1][1]], value,
+                                                interp_percents[0] * interp_percents[1] * interp_percents[2]);
+}
+
+float read_value_interp_params(const dwm_ma_t *handle, const float interp_percents[3],
+                               const int interp_indices[2][2][2]) {
+    return flerpf(flerpf(flerpf(handle->p_aux[interp_indices[0][0][0]], handle->p_aux[interp_indices[1][0][0]],
+                                interp_percents[0]),
+                         flerpf(handle->p_aux[interp_indices[0][1][0]], handle->p_aux[interp_indices[1][1][0]],
+                                interp_percents[0]),
+                         interp_percents[1]),
+                  flerpf(flerpf(handle->p_aux[interp_indices[0][0][1]], handle->p_aux[interp_indices[1][0][1]],
+                                interp_percents[0]),
+                         flerpf(handle->p_aux[interp_indices[0][1][1]], handle->p_aux[interp_indices[1][1][1]],
+                                interp_percents[0]),
+                         interp_percents[1]),
+                  interp_percents[2]);
 }
 
 void process_iteration(dwm_ma_t *handle) {
@@ -382,22 +410,12 @@ float process_boundary(dwm_boundary_t *b, const float in, const float r[2]) {
     return out;
 }
 
-static int mini(const int a, const int b) {
-    return a < b ? a : b;
-}
+static int mini(const int a, const int b) { return a < b ? a : b; }
 
-static int maxi(const int a, const int b) {
-    return a > b ? a : b;
-}
+static int maxi(const int a, const int b) { return a > b ? a : b; }
 
-static int clampi(const int v, const int min, const int max) {
-    return mini(maxi(v, min), max);
-}
+static int clampi(const int v, const int min, const int max) { return mini(maxi(v, min), max); }
 
-float fclampf(const float v, const float min, const float max) {
-    return fminf(fmaxf(v, min), max);
-}
+float fclampf(const float v, const float min, const float max) { return fminf(fmaxf(v, min), max); }
 
-float flerpf(const float a, const float b, const float f) {
-    return a * (1.0f - f) + (b * f);
-}
+float flerpf(const float a, const float b, const float f) { return a * (1.0f - f) + (b * f); }

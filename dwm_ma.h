@@ -108,9 +108,10 @@ void dwm_ma_destroy(void **dwm_ma);
  * dwm_bound_params_normalized != 0 -> \n
  * + dwm_bound_params[AXIS][0] = normalized admittance (in [0, 1] range), \n
  * + dwm_bound_params[AXIS][1] = normalized low-pass cutoff (in [0, 1] range)
- * @details R1 and R2 refer to the filter parameters mentioned in Kelloniemi, Antti. "Frequency-dependent boundary condition for the 3-D digital waveguide mesh." Proc. Int. Conf. Digital Audio Effects (DAFx’06). 2006.
+ * @details R1 and R2 refer to the filter parameters mentioned in Kelloniemi, Antti. "Frequency-dependent boundary
+ * condition for the 3-D digital waveguide mesh." Proc. Int. Conf. Digital Audio Effects (DAFx’06). 2006.
  */
-void dwm_ma_init(void *dwm_ma, float dwm_bound_params[6][2], int dwm_bound_params_normalized);
+void dwm_ma_init(void *dwm_ma, const float dwm_bound_params[6][2], int dwm_bound_params_normalized);
 
 /**
  * Processes DWM_MA_BUFFER_SIZE samples inside a dwm-ma, with dwm coordinates expressed in metric units
@@ -119,15 +120,16 @@ void dwm_ma_init(void *dwm_ma, float dwm_bound_params[6][2], int dwm_bound_param
  * @param in_positions_m metric positions of each input (dimensionality in_count x 3)
  * @param in_count amount of inputs processed (no more than DWM_MA_MAX_INPUT_COUNT)
  * @param ma_config microphone array configuration used
- * @param ma_buffers samples outputted by each microphone (dimensionality ma_channel_count x DWM_MA_BUFFER_SIZE)
+ * @param ma_scale microphone array scale
+ * @param ma_buffers samples outputted by each microphone (dimensionality ma_config->channel_count x DWM_MA_BUFFER_SIZE)
  * @param ma_position_m microphone array's center position (dimensionality 1 x 3)
  * @note Non-valid coordinates are clamped to valid mesh coordinates, the microphone array's center is also moved to the
  * nearest valid position inside the mesh to avoid sampling of non-valid coordinates
  * @note Positions between discrete junctions are read/written with trilinear interpolation
  * @note Non-valid ma_config values result in MA_CONFIG_MONO being used
  */
-void dwm_ma_process_m(void *dwm_ma,
-                      float **in_buffers, float **in_positions_m, int in_count,
-                      MA_CONFIG ma_config, float **ma_buffers, float *ma_position_m);
+void dwm_ma_process_interpolated(void *dwm_ma, const float *const *in_buffers, const float *const *in_positions_m,
+                                 int in_count, MA_CONFIG ma_config, float ma_scale, float *const *ma_buffers,
+                                 const float *ma_position_m);
 
 #endif
