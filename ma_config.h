@@ -50,6 +50,10 @@ typedef struct {
      */
     const int channel_count;
     /**
+     * Azimuth-elevation couples for each microphone, in radians (valid data dimensionality channel_count x 2)
+     */
+    const float mic_azi_elev[DWM_MA_MAX_OUTPUT_COUNT][2];
+    /**
      * Relative junction X-Y-Z coordinates to the center of the array for each microphone (valid data dimensionality
      * channel_count x 3)
      * @remark All layouts' channels are ordered lexicographically in order of relative coordinates to the center of the
