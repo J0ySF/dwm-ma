@@ -34,7 +34,7 @@ typedef enum {
 /**
  * Maximum possible output count used by any microphone array layout
  */
-#define DWM_MA_MAX_OUTPUT_COUNT 48
+#define DWM_MA_MAX_OUTPUT_COUNT 30
 
 /**
  * Microphone array layout
